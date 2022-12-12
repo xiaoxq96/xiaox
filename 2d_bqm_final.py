@@ -34,40 +34,23 @@ import matplotlib.patches as mpatch
 
 from unilts import read_instance
 
-class QPUSubproblemExternalEmbeddingSampler(traits.SubproblemSampler,
-                                            traits.EmbeddingIntaking,
-                                            traits.SISO, Runnable):
-    r"""A quantum sampler for a subproblem with a defined minor-embedding.
-    Note:
-        Externally supplied embedding must be present in the input state.
-    Args:
-        num_reads (int, optional, default=100):
-            Number of states (output solutions) to read from the sampler.
-        qpu_sampler (:class:`dimod.Sampler`, optional, default=\ :class:`~dwave.system.samplers.DWaveSampler()` ):
-            Quantum sampler such as a D-Wave system.
-        sampling_params (dict):
-            Dictionary of keyword arguments with values that will be used
-            on every call of the (external-embedding-wrapped QPU) sampler.
-        logical_srt (int, optional, default=False):
-            Perform a spin-reversal transform over the logical space.
-    See :ref:`samplers-examples`.
+class QPUSubproblemAutoEmbeddingSampler(traits.SubproblemSampler, traits.SISO, Runnable):
+    """A quantum sampler for a subproblem with automated heuristic minor-embedding.
     """
-
-    def __init__(self, num_reads=100, qpu_sampler=None, sampling_params=None,
-                 logical_srt=False, **runopts):
-        super(QPUSubproblemExternalEmbeddingSampler, self).__init__(**runopts)
-
+    def __init__(self, num_reads=100, num_retries=0, qpu_sampler=None, sampling_params=None,
+                 auto_embedding_params=None, **runopts):
+        super(QPUSubproblemAutoEmbeddingSampler, self).__init__(**runopts)
         self.num_reads = num_reads
-
+        self.num_retries = num_retries
         if qpu_sampler is None:
             qpu_sampler = DWaveSampler()
-        self.sampler = qpu_sampler
-
         if sampling_params is None:
             sampling_params = {}
         self.sampling_params = sampling_params
-
-        self.logical_srt = logical_srt
+        # embed on the fly and only if needed
+        if auto_embedding_params is None:
+            auto_embedding_params = {}
+        self.sampler = AutoEmbeddingComposite(qpu_sampler, **auto_embedding_params)
         self.qpu_access_time=0
     def __repr__(self):
         return ("{self}(num_reads={self.num_reads!r}, "
@@ -77,18 +60,25 @@ class QPUSubproblemExternalEmbeddingSampler(traits.SubproblemSampler,
     def next(self, state, **runopts):
         num_reads = runopts.get('num_reads', self.num_reads)
         sampling_params = runopts.get('sampling_params', self.sampling_params)
-
         params = sampling_params.copy()
         params.update(num_reads=num_reads)
+        num_retries = runopts.get('num_retries', self.num_retries)
+        embedding_success = False
+        num_tries = 0
 
-        sampler = FixedEmbeddingComposite(self.sampler, embedding=state.embedding)
-        if self.logical_srt:
-            params.update(num_spin_reversal_transforms=1)
-            sampler = SpinReversalTransformComposite(sampler)
-        response = sampler.sample(state.subproblem, **params)
-        self.qpu_access_time+=response.info['timing']['qpu_access_time']*(0.001)
+        while not embedding_success:
+            try:
+                num_tries += 1
+                response = self.sampler.sample(state.subproblem, **params)
+                self.qpu_access_time+=response.info['timing']['qpu_access_time']*(0.001)
+            except ValueError as exc:
+                if num_tries <= num_retries:
+                    pass
+                else:
+                    raise exc
+            else:
+                embedding_success = True
         return state.updated(subsamples=response)
-
 
 class KerberosSampler(dimod.Sampler):
     
@@ -127,7 +117,7 @@ class KerberosSampler(dimod.Sampler):
             'max_subproblem_size': []
         }
         self.properties = {}
-        self.QPUSubproblemExternalEmbeddingSampler=QPUSubproblemExternalEmbeddingSampler
+        self.QPUSubproblemAutoEmbeddingSampler=QPUSubproblemAutoEmbeddingSampler
     def Kerberos(self,sampler,max_iter=100, max_time=None, convergence=3, energy_threshold=None,
                  sa_reads=1, sa_sweeps=10000, tabu_timeout=500,
                  qpu_reads=100, qpu_sampler=None, qpu_params=None,
@@ -241,9 +231,7 @@ class KerberosSampler(dimod.Sampler):
                 init_state_gen = lambda: hybrid.State.from_sample(init_sample, bqm)
             else:
                 raise TypeError("'init_sample' should be a SampleSet or a SampleSet generator")
-            external_sampler=self.QPUSubproblemExternalEmbeddingSampler(num_reads=qpu_reads, qpu_sampler=qpu_sampler, sampling_params=qpu_params)
-            sampler=hybrid.SubproblemCliqueEmbedder(sampler=qpu_sampler,) | external_sampler
-            #self.QPUSubproblemAutoEmbeddingSampler(num_reads=qpu_reads, qpu_sampler=qpu_sampler, sampling_params=qpu_params)
+            sampler=self.QPUSubproblemAutoEmbeddingSampler(num_reads=qpu_reads, qpu_sampler=qpu_sampler, sampling_params=qpu_params)
             self.runnable = self.Kerberos(sampler,max_iter, max_time, convergence, energy_threshold,sa_reads, sa_sweeps, tabu_timeout,qpu_reads, qpu_sampler, qpu_params,
                          max_subproblem_size)
     
@@ -258,7 +246,7 @@ class KerberosSampler(dimod.Sampler):
                 samples.append(ss.first.sample)
                 energies.append(ss.first.energy)
             
-            return dimod.SampleSet.from_samples(samples, vartype=bqm.vartype, energy=energies),external_sampler.qpu_access_time
+            return dimod.SampleSet.from_samples(samples, vartype=bqm.vartype, energy=energies),sampler.qpu_access_time
 
 
 class zweiD_Problem():
@@ -291,13 +279,13 @@ class zweiD_Problem():
         
     
     def define_variables(self):
-        self.P_j={(j):'P_{}'.format(j)for j in range(self.num_platte)}
+        #self.P_j={(j):'P_{}'.format(j)for j in range(self.num_platte)}
         self.X_i={(i,j,r,a,b):'x_{}_{}_{}_{}_{}'.format(i,j,r,a,b)for i in range(self.num_stueck)
                    for j in range(self.num_platte)
                    for r in range(2) #0:nicht umgedrehnt 1:umgedrehnt
                    for a in range(j*self.platte_lange,(j+1)*self.platte_lange-self.eff_dim[i][r][0]+1)
                    for b in range(0,self.platte_breite - self.eff_dim[i][r][1]+1)}
-        self.variables=[self.X_i,self.P_j]
+        self.variables=[self.X_i]
         return self.variables
     
     def define_bqm(self):
@@ -369,7 +357,7 @@ class zweiD_Problem():
                             #for c in range(a-self.eff_dim[k][s][0]+1,a+self.eff_dim[i][r][0]):
                                 #for d in range(b-self.eff_dim[k][s][1]+1,b+self.eff_dim[i][r][1]):
                                     #if ((a-self.eff_dim[k][s][0]) < c < (a+self.eff_dim[i][r][0])) and ((b-self.eff_dim[k][s][1])< d < (b+self.eff_dim[i][r][1])):
-                                                self.bqm.add_quadratic(self.X_i[(i,j,r,a,b)],self.X_i[(k,j,s,c,d)],weight*(j+1)*self.platte_breite*self.platte_lange)
+                                                self.bqm.add_quadratic(self.X_i[(i,j,r,a,b)],self.X_i[(k,j,s,c,d)],weight*self.num_platte*self.platte_breite*self.platte_lange)
         return
     
 
@@ -377,7 +365,7 @@ class zweiD_Problem():
     
     def anzahl_objektive(self,weight):
         for j in range(self.num_platte):
-            self.bqm.add_linear(self.P_j[(j)],-weight*(j+1.1)*self.platte_breite*self.platte_lange)
+            self.bqm.add_linear(self.P_j[(j)],-weight*(j+1)*self.platte_breite*self.platte_lange)
         return
     
     def position_objektive(self,weight):
@@ -390,7 +378,7 @@ class zweiD_Problem():
                 for r in range(2):
                     for a in range(j*self.platte_lange,(j+1)*self.platte_lange-self.eff_dim[i][r][0]+1):
                         for b in range(0,self.platte_breite - self.eff_dim[i][r][1]+1):
-                            bias[self.X_i[(i,j,r,a,b)]]=(a+self.eff_dim[i][r][0])+(b+self.eff_dim[i][r][1]+j*self.platte_breite)*weight
+                            bias[self.X_i[(i,j,r,a,b)]]=(a+self.eff_dim[i][r][0])*(b+self.eff_dim[i][r][1]+j*self.platte_breite)*weight
 
         self.bqm.add_linear_from(bias)
         return
@@ -422,7 +410,7 @@ class zweiD_Problem():
         '''
         return self.solution,qpu_access_times
     
-    def klassische_solve(self,max_iter,convergence,num_reads):
+    def klassische_solve(self,convergence):
         iteration = hybrid.RacingBranches(hybrid.Const(subsamples=None)
         |hybrid.InterruptableTabuSampler(num_reads=None, tenure=None, timeout=100, initial_states_generator='random'),
         hybrid.EnergyImpactDecomposer(size=2)
@@ -431,7 +419,7 @@ class zweiD_Problem():
                  initial_states_generator='random')
         | hybrid.SplatComposer()
         ) | hybrid.ArgMin()
-        workflow = hybrid.LoopUntilNoImprovement(iteration, convergence=convergence,max_iter=max_iter)
+        workflow = hybrid.LoopUntilNoImprovement(iteration, convergence=convergence)
     
         # Solve the problem
         init_state = hybrid.State.from_problem(self.bqm)
@@ -504,7 +492,6 @@ class zweiD_Problem():
         ax.axis([0,2*self.gesamte_platte_lange,0,2*self.platte_breite])
         ax.set_aspect(1)
         plt.show()
-        plt.savefig('2d.png',bbox_inches = 'tight',dpi=600)
         
 
     def prufung(self):
@@ -527,16 +514,16 @@ if __name__== "__main__":
     a.variables_constraints(1)
     
     a.geomerie_constraint(1)
-    a.stuecke_position_constraint(1)
+    #a.stuecke_position_constraint(1)
     #a.x_grenze_constraint(300)
     #a.y_grenze_constraint(300)
-    #a.position_objektive(0.001)
-    a.anzahl_objektive(1)
+    a.position_objektive(1)
+    #a.anzahl_objektive(1)
     
     #a.reste_objektive(200)
     
     #a.prufung()
-    
+    '''
     starttime=datetime.datetime.now()
     solution,qpu_access_time= a.call_bqm_solver(max_iter=1,convergence=1)
     endtime=datetime.datetime.now()
@@ -546,13 +533,13 @@ if __name__== "__main__":
     print(solution,qpu_access_time)
     '''
     starttime=datetime.datetime.now()
-    solution= a.klassische_solve(max_iter=10,num_reads=1500,convergence=8)
+    solution= a.klassische_solve(convergence=1)
     endtime=datetime.datetime.now()
     print ("starttime:",starttime)
     print ("endtime:",endtime)
     print ("runtime:",(endtime-starttime))
     print(solution)
-    '''
+    
     a.zeichnung()
 
 
