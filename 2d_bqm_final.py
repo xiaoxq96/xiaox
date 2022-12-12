@@ -335,7 +335,7 @@ class zweiD_Problem():
                 for r in range(2): #0:nicht umgedrehnt 1:umgedrehnt
                     for a in range(j*self.platte_lange,(j+1)*self.platte_lange-self.eff_dim[i][r][0]+1):
                         for b in range(0,self.platte_breite - self.eff_dim[i][r][1]+1):
-                                self.bqm.add_quadratic(self.P_j[(j)],self.X_i[(i,j,r,a,b)],weight*(self.num_platte-j)*self.platte_breite*self.platte_lange)
+                                self.bqm.add_quadratic(self.P_j[(j)],self.X_i[(i,j,r,a,b)],weight*(j+1)*self.platte_breite*self.platte_lange)
                     
                     
     
@@ -369,7 +369,7 @@ class zweiD_Problem():
                             #for c in range(a-self.eff_dim[k][s][0]+1,a+self.eff_dim[i][r][0]):
                                 #for d in range(b-self.eff_dim[k][s][1]+1,b+self.eff_dim[i][r][1]):
                                     #if ((a-self.eff_dim[k][s][0]) < c < (a+self.eff_dim[i][r][0])) and ((b-self.eff_dim[k][s][1])< d < (b+self.eff_dim[i][r][1])):
-                                                self.bqm.add_quadratic(self.X_i[(i,j,r,a,b)],self.X_i[(k,j,s,c,d)],weight*self.num_platte*self.platte_breite*self.platte_lange)
+                                                self.bqm.add_quadratic(self.X_i[(i,j,r,a,b)],self.X_i[(k,j,s,c,d)],weight*(j+1)*self.platte_breite*self.platte_lange)
         return
     
 
@@ -377,9 +377,23 @@ class zweiD_Problem():
     
     def anzahl_objektive(self,weight):
         for j in range(self.num_platte):
-            self.bqm.add_linear(self.P_j[(j)],-weight*(j+1)*self.platte_breite*self.platte_lange)
+            self.bqm.add_linear(self.P_j[(j)],-weight*(j+1.1)*self.platte_breite*self.platte_lange)
         return
     
+    def position_objektive(self,weight):
+        #所用最少的stange
+        bias={}
+        
+            
+        for i in range(self.num_stueck):
+            for j in range(self.num_platte):
+                for r in range(2):
+                    for a in range(j*self.platte_lange,(j+1)*self.platte_lange-self.eff_dim[i][r][0]+1):
+                        for b in range(0,self.platte_breite - self.eff_dim[i][r][1]+1):
+                            bias[self.X_i[(i,j,r,a,b)]]=(a+self.eff_dim[i][r][0])+(b+self.eff_dim[i][r][1]+j*self.platte_breite)*weight
+
+        self.bqm.add_linear_from(bias)
+        return
        
     def call_bqm_solver(self,max_iter,convergence):
         
@@ -474,7 +488,7 @@ class zweiD_Problem():
 
 
         for x,y,i,r in zip(self.x_achse,self.y_achse,self.ids,self.um):
-                txt=f"id{self.stueck_ids[(i)]}"+" "+f"Teil {i}"
+                txt=f"{self.stueck_ids[(i)]}"+":"+f"{i}"
                 plt.text(x+0.1,y+0.1,txt,fontsize=7)
                 rect=mpatch.Rectangle((x,y),self.eff_dim[i][r][0],self.eff_dim[i][r][1],edgecolor = 'green',facecolor =colors[self.stueck_ids[(i)]],fill=True,alpha=0.3)
                 ax.add_patch(rect)
@@ -490,6 +504,7 @@ class zweiD_Problem():
         ax.axis([0,2*self.gesamte_platte_lange,0,2*self.platte_breite])
         ax.set_aspect(1)
         plt.show()
+        plt.savefig('2d.png',bbox_inches = 'tight',dpi=600)
         
 
     def prufung(self):
@@ -515,7 +530,7 @@ if __name__== "__main__":
     a.stuecke_position_constraint(1)
     #a.x_grenze_constraint(300)
     #a.y_grenze_constraint(300)
-    
+    #a.position_objektive(0.001)
     a.anzahl_objektive(1)
     
     #a.reste_objektive(200)
@@ -523,7 +538,7 @@ if __name__== "__main__":
     #a.prufung()
     
     starttime=datetime.datetime.now()
-    solution,qpu_access_time= a.call_bqm_solver(max_iter=10,convergence=8)
+    solution,qpu_access_time= a.call_bqm_solver(max_iter=1,convergence=1)
     endtime=datetime.datetime.now()
     print ("starttime:",starttime)
     print ("endtime:",endtime)
