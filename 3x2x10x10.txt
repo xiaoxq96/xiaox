@@ -1,8 +1,0 @@
-# Max num of bins : 2
-# Bin dimensions (L * W): 10  10
-
-  case_id    quantity    length    width
----------  ----------  --------  --------
-0          1          10        2
-1          1          8        2
-2          1          8         8
