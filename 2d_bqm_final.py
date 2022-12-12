@@ -461,7 +461,7 @@ class zweiD_Problem():
 
 
         for x,y,i,r in zip(self.x_achse,self.y_achse,self.ids,self.um):
-                txt=f"id{self.stueck_ids[(i)]}"+" "+f"Teil {i}"
+                txt=f"{self.stueck_ids[(i)]}"+":"+f"{i}"
                 plt.text(x+0.1,y+0.1,txt,fontsize=7)
                 rect=mpatch.Rectangle((x,y),self.eff_dim[i][r][0],self.eff_dim[i][r][1],edgecolor = 'green',facecolor =colors[self.stueck_ids[(i)]],fill=True,alpha=0.3)
                 ax.add_patch(rect)
@@ -477,6 +477,7 @@ class zweiD_Problem():
         ax.axis([0,2*self.gesamte_platte_lange,0,2*self.platte_breite])
         ax.set_aspect(1)
         plt.show()
+        plt.savefig('2d.png',bbox_inches = 'tight')
         
 
     def prufung(self):
