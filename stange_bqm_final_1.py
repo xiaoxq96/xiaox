@@ -496,7 +496,7 @@ class eindim_Problem():
             rect=mpatch.Rectangle((0,j),self.stange_lange,0.25,color="tab:gray",alpha=0.3)
             ax.add_patch(rect)
         for x,i,j in zip(self.x_achse,self.ids,self.i_loc):
-                txt=f"id{self.stueck_ids[(i)]}"+" "+f"Teil {i}"
+                txt=f"{self.stueck_ids[(i)]}"+":"+f"{i}"
                 plt.text(x % self.stange_lange+0.5,j+0.1,txt,fontsize=8)
                 rect=mpatch.Rectangle((x % self.stange_lange,j),self.stueck_lange[(i)],0.25,edgecolor = 'green',facecolor =colors[self.stueck_ids[(i)]],fill=True,alpha=0.5)
                 ax.add_patch(rect)
@@ -510,6 +510,7 @@ class eindim_Problem():
         '''
         ax.axis([0,self.stange_lange,0,self.num_stange])
         plt.show()
+        plt.savefig('1d.png',bbox_inches = 'tight')
         
     def prufung(self):
     
