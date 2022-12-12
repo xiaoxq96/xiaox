@@ -492,6 +492,7 @@ class zweiD_Problem():
         ax.axis([0,2*self.gesamte_platte_lange,0,2*self.platte_breite])
         ax.set_aspect(1)
         plt.show()
+        plt.savefig('2d.png',bbox_inches = 'tight',dpi=600)
         
 
     def prufung(self):
