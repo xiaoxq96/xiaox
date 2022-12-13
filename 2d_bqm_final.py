@@ -279,13 +279,13 @@ class zweiD_Problem():
         
     
     def define_variables(self):
-        #self.P_j={(j):'P_{}'.format(j)for j in range(self.num_platte)}
+        self.P_j={(j):'P_{}'.format(j)for j in range(self.num_platte)}
         self.X_i={(i,j,r,a,b):'x_{}_{}_{}_{}_{}'.format(i,j,r,a,b)for i in range(self.num_stueck)
                    for j in range(self.num_platte)
                    for r in range(2) #0:nicht umgedrehnt 1:umgedrehnt
                    for a in range(j*self.platte_lange,(j+1)*self.platte_lange-self.eff_dim[i][r][0]+1)
                    for b in range(0,self.platte_breite - self.eff_dim[i][r][1]+1)}
-        self.variables=[self.X_i]
+        self.variables=[self.X_i,self.P_j]
         return self.variables
     
     def define_bqm(self):
@@ -323,7 +323,7 @@ class zweiD_Problem():
                 for r in range(2): #0:nicht umgedrehnt 1:umgedrehnt
                     for a in range(j*self.platte_lange,(j+1)*self.platte_lange-self.eff_dim[i][r][0]+1):
                         for b in range(0,self.platte_breite - self.eff_dim[i][r][1]+1):
-                                self.bqm.add_quadratic(self.P_j[(j)],self.X_i[(i,j,r,a,b)],weight*(j+1)*self.platte_breite*self.platte_lange)
+                                self.bqm.add_quadratic(self.P_j[(j)],self.X_i[(i,j,r,a,b)],weight*self.num_platte*self.platte_breite*self.platte_lange)
                     
                     
     
@@ -365,7 +365,7 @@ class zweiD_Problem():
     
     def anzahl_objektive(self,weight):
         for j in range(self.num_platte):
-            self.bqm.add_linear(self.P_j[(j)],-weight*(j+1)*self.platte_breite*self.platte_lange)
+            self.bqm.add_linear(self.P_j[(j)],-weight*self.platte_breite*self.platte_lange)
         return
     
     def position_objektive(self,weight):
@@ -410,7 +410,7 @@ class zweiD_Problem():
         '''
         return self.solution,qpu_access_times
     
-    def klassische_solve(self,convergence):
+    def klassische_solve(self,convergence,max_iter):
         iteration = hybrid.RacingBranches(hybrid.Const(subsamples=None)
         |hybrid.InterruptableTabuSampler(num_reads=None, tenure=None, timeout=100, initial_states_generator='random'),
         hybrid.EnergyImpactDecomposer(size=2)
@@ -419,7 +419,7 @@ class zweiD_Problem():
                  initial_states_generator='random')
         | hybrid.SplatComposer()
         ) | hybrid.ArgMin()
-        workflow = hybrid.LoopUntilNoImprovement(iteration, convergence=convergence)
+        workflow = hybrid.LoopUntilNoImprovement(iteration, convergence=convergence,max_iter=max_iter)
     
         # Solve the problem
         init_state = hybrid.State.from_problem(self.bqm)
@@ -492,7 +492,6 @@ class zweiD_Problem():
         ax.axis([0,2*self.gesamte_platte_lange,0,2*self.platte_breite])
         ax.set_aspect(1)
         plt.show()
-        plt.savefig('2d.png',bbox_inches = 'tight',dpi=600)
         
 
     def prufung(self):
@@ -512,14 +511,14 @@ if __name__== "__main__":
     v=a.define_variables()
     bqm=a.define_bqm()
     
-    a.variables_constraints(1)
+    a.variables_constraints(2)
     
     a.geomerie_constraint(1)
-    #a.stuecke_position_constraint(1)
+    a.stuecke_position_constraint(1)
     #a.x_grenze_constraint(300)
     #a.y_grenze_constraint(300)
-    a.position_objektive(1)
-    #a.anzahl_objektive(1)
+    a.position_objektive(0.1)
+    a.anzahl_objektive(0.75)
     
     #a.reste_objektive(200)
     
@@ -534,7 +533,7 @@ if __name__== "__main__":
     print(solution,qpu_access_time)
     '''
     starttime=datetime.datetime.now()
-    solution= a.klassische_solve(convergence=1)
+    solution= a.klassische_solve(max_iter=1,convergence=1)
     endtime=datetime.datetime.now()
     print ("starttime:",starttime)
     print ("endtime:",endtime)
