@@ -14,6 +14,7 @@ from hybrid import traits
 from dwave.system.composites import AutoEmbeddingComposite, FixedEmbeddingComposite
 from hybrid.core import Runnable, SampleSet
 import hybrid
+from dwave.preprocessing.composites import SpinReversalTransformComposite
 
 
 from dimod import quicksum, BinaryQuadraticModel, Real, Binary, SampleSet
@@ -36,23 +37,40 @@ from matplotlib.pyplot import MultipleLocator
 from unilts1 import read_instance
 #from output import zeichnung
 
-class QPUSubproblemAutoEmbeddingSampler(traits.SubproblemSampler, traits.SISO, Runnable):
-    """A quantum sampler for a subproblem with automated heuristic minor-embedding.
+class QPUSubproblemExternalEmbeddingSampler(traits.SubproblemSampler,
+                                            traits.EmbeddingIntaking,
+                                            traits.SISO, Runnable):
+    r"""A quantum sampler for a subproblem with a defined minor-embedding.
+    Note:
+        Externally supplied embedding must be present in the input state.
+    Args:
+        num_reads (int, optional, default=100):
+            Number of states (output solutions) to read from the sampler.
+        qpu_sampler (:class:`dimod.Sampler`, optional, default=\ :class:`~dwave.system.samplers.DWaveSampler()` ):
+            Quantum sampler such as a D-Wave system.
+        sampling_params (dict):
+            Dictionary of keyword arguments with values that will be used
+            on every call of the (external-embedding-wrapped QPU) sampler.
+        logical_srt (int, optional, default=False):
+            Perform a spin-reversal transform over the logical space.
+    See :ref:`samplers-examples`.
     """
-    def __init__(self, num_reads=100, num_retries=0, qpu_sampler=None, sampling_params=None,
-                 auto_embedding_params=None, **runopts):
-        super(QPUSubproblemAutoEmbeddingSampler, self).__init__(**runopts)
+
+    def __init__(self, num_reads=100, qpu_sampler=None, sampling_params=None,
+                 logical_srt=False, **runopts):
+        super(QPUSubproblemExternalEmbeddingSampler, self).__init__(**runopts)
+
         self.num_reads = num_reads
-        self.num_retries = num_retries
+
         if qpu_sampler is None:
             qpu_sampler = DWaveSampler()
+        self.sampler = qpu_sampler
+
         if sampling_params is None:
             sampling_params = {}
         self.sampling_params = sampling_params
-        # embed on the fly and only if needed
-        if auto_embedding_params is None:
-            auto_embedding_params = {}
-        self.sampler = AutoEmbeddingComposite(qpu_sampler, **auto_embedding_params)
+
+        self.logical_srt = logical_srt
         self.qpu_access_time=0
     def __repr__(self):
         return ("{self}(num_reads={self.num_reads!r}, "
@@ -62,25 +80,18 @@ class QPUSubproblemAutoEmbeddingSampler(traits.SubproblemSampler, traits.SISO, R
     def next(self, state, **runopts):
         num_reads = runopts.get('num_reads', self.num_reads)
         sampling_params = runopts.get('sampling_params', self.sampling_params)
+
         params = sampling_params.copy()
         params.update(num_reads=num_reads)
-        num_retries = runopts.get('num_retries', self.num_retries)
-        embedding_success = False
-        num_tries = 0
 
-        while not embedding_success:
-            try:
-                num_tries += 1
-                response = self.sampler.sample(state.subproblem, **params)
-                self.qpu_access_time+=response.info['timing']['qpu_access_time']*(0.001)
-            except ValueError as exc:
-                if num_tries <= num_retries:
-                    pass
-                else:
-                    raise exc
-            else:
-                embedding_success = True
+        sampler = FixedEmbeddingComposite(self.sampler, embedding=state.embedding)
+        if self.logical_srt:
+            params.update(num_spin_reversal_transforms=1)
+            sampler = SpinReversalTransformComposite(sampler)
+        response = sampler.sample(state.subproblem, **params)
+        self.qpu_access_time+=response.info['timing']['qpu_access_time']*(0.001)
         return state.updated(subsamples=response)
+
 
 class KerberosSampler(dimod.Sampler):
     
@@ -119,7 +130,7 @@ class KerberosSampler(dimod.Sampler):
             'max_subproblem_size': []
         }
         self.properties = {}
-        self.QPUSubproblemAutoEmbeddingSampler=QPUSubproblemAutoEmbeddingSampler
+        self.QPUSubproblemExternalEmbeddingSampler=QPUSubproblemExternalEmbeddingSampler
     def Kerberos(self,sampler,max_iter=100, max_time=None, convergence=3, energy_threshold=None,
                  sa_reads=1, sa_sweeps=10000, tabu_timeout=500,
                  qpu_reads=100, qpu_sampler=None, qpu_params=None,
@@ -233,7 +244,9 @@ class KerberosSampler(dimod.Sampler):
                 init_state_gen = lambda: hybrid.State.from_sample(init_sample, bqm)
             else:
                 raise TypeError("'init_sample' should be a SampleSet or a SampleSet generator")
-            sampler=self.QPUSubproblemAutoEmbeddingSampler(num_reads=qpu_reads, qpu_sampler=qpu_sampler, sampling_params=qpu_params)
+            external_sampler=self.QPUSubproblemExternalEmbeddingSampler(num_reads=qpu_reads, qpu_sampler=qpu_sampler, sampling_params=qpu_params)
+            sampler=hybrid.SubproblemCliqueEmbedder(sampler=qpu_sampler,) | external_sampler
+            #self.QPUSubproblemAutoEmbeddingSampler(num_reads=qpu_reads, qpu_sampler=qpu_sampler, sampling_params=qpu_params)
             self.runnable = self.Kerberos(sampler,max_iter, max_time, convergence, energy_threshold,sa_reads, sa_sweeps, tabu_timeout,qpu_reads, qpu_sampler, qpu_params,
                          max_subproblem_size)
     
@@ -248,7 +261,7 @@ class KerberosSampler(dimod.Sampler):
                 samples.append(ss.first.sample)
                 energies.append(ss.first.energy)
             
-            return dimod.SampleSet.from_samples(samples, vartype=bqm.vartype, energy=energies),sampler.qpu_access_time
+            return dimod.SampleSet.from_samples(samples, vartype=bqm.vartype, energy=energies),external_sampler.qpu_access_time
 
 
 class eindim_Problem():
