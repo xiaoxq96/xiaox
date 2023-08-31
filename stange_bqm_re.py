@@ -7,6 +7,9 @@ Created on Wed Sep 28 17:15:40 2022
 
 from dwave.system.samplers import LeapHybridBQMSampler
 from dwave.system import DWaveSampler, EmbeddingComposite,DWaveCliqueSampler
+from dwave.samplers import SimulatedAnnealingSampler
+from dwave.samplers import SteepestDescentSampler
+from dwave.samplers import TabuSampler
 import datetime
 import dimod
 import numpy as np
@@ -14,6 +17,11 @@ from hybrid import traits
 from dwave.system.composites import AutoEmbeddingComposite, FixedEmbeddingComposite
 from hybrid.core import Runnable, SampleSet
 import hybrid
+import minorminer
+
+from collections import defaultdict
+import numpy as np
+
 
 
 from dimod import quicksum, BinaryQuadraticModel, Real, Binary, SampleSet
@@ -112,7 +120,6 @@ class SubproblemCliqueEmbedder(traits.SubproblemIntaking,
             state.subproblem.variables, self.sampler)
         return state.updated(embedding=embedding)
 
-import dwave_networkx as dnx
 
 
 
@@ -757,9 +764,11 @@ class eindim_Problem():
         '''
         sampler=DWaveSampler()
         max_slope = 1.0/sampler.properties["annealing_time_range"][0]
+        print(sampler.properties["annealing_time_range"][0])
         reverse_schedule=self.make_reverse_anneal_schedule(s_target=0.4, hold_time=180, ramp_up_slope=max_slope)
+        
         time_total = reverse_schedule[3][0]
-        forward_answer,qpu_access_time1 = self.KerberosSampler().sample(self.bqm,max_iter=max_iter,convergence=convergence,qpu_sampler=sampler,qpu_params={'label': 'JSSP_bqm_iter_reverse_forward'},qpu_reads=num_reads,sa_reads=sa_reads,sa_sweeps=sa_sweeps,max_subproblem_size=max_subproblem_size)
+        forward_answer= self.KerberosSampler().sample(self.bqm,max_iter=max_iter,convergence=convergence,qpu_sampler=sampler,qpu_params={'label': 'JSSP_bqm_iter_reverse_forward'},qpu_reads=num_reads,sa_reads=sa_reads,sa_sweeps=sa_sweeps,max_subproblem_size=max_subproblem_size)
         forward_solutions, forward_energies = forward_answer.record.sample, forward_answer.record.energy
         i5 = int(5.0/95*len(forward_answer))  # Index i5 is about a 5% indexial move from the sample of lowest energy
         initial = dict(zip(forward_answer.variables, forward_answer.record[i5].sample))
@@ -775,6 +784,7 @@ class eindim_Problem():
         
         qpu_access_times=0
         qpu_access_times+=qpu_access_time1+qpu_access_time2
+        
         '''
         self.ReverseAnnealingAutoEmbeddingSampler=ReverseAnnealingAutoEmbeddingSampler
         workflow = hybrid.RacingBranches(
@@ -794,48 +804,61 @@ class eindim_Problem():
         qpu_access_times+=qpu_access_time1+qpu_access_time2
         '''
         return self.solution,qpu_access_times
-    
-    def qpu_working_graph(self,qpu):
-        "Return a dwave_networkx graph representing the working graph of a given QPU."
-        
-        dnx_graphs = {'chimera': dnx.chimera_graph, 'pegasus': dnx.pegasus_graph}
 
-        dnx_graph = dnx_graphs[qpu.properties["topology"]["type"]]
 
-        return dnx_graph(qpu.properties["topology"]["shape"][0], 
-                         node_list=qpu.nodelist, 
-                         edge_list=qpu.edgelist)
+# 定义CSP模型。
     
-    def pureRA(self,max_iter,convergence,num_reads,sa_reads=1,sa_sweeps=10000,max_subproblem_size=50):
+# 求解
+    
+    def pureRA(self,s_target,hold_time):#,max_iter,convergence,num_reads,sa_reads=1,sa_sweeps=10000,max_subproblem_size=50):
         sampler=DWaveSampler()
         max_slope = 1.0/sampler.properties["annealing_time_range"][0]
-        reverse_schedule=self.make_reverse_anneal_schedule(s_target=0.4, hold_time=180, ramp_up_slope=max_slope)
+        reverse_schedule=self.make_reverse_anneal_schedule(s_target=s_target, hold_time=hold_time, ramp_up_slope=max_slope)
+        
         time_total = reverse_schedule[3][0]
-        forward_answer,qpu_access_time1 = self.KerberosSampler().sample(self.bqm,max_iter=max_iter,convergence=convergence,qpu_sampler=sampler,qpu_params={'label': 'JSSP_bqm_iter_reverse_forward'},qpu_reads=num_reads,sa_reads=sa_reads,sa_sweeps=sa_sweeps,max_subproblem_size=max_subproblem_size)
+
+        embedding=minorminer.find_embedding(list(self.bqm.quadratic.keys()), sampler.edgelist)
+        sampler_emb=FixedEmbeddingComposite(DWaveSampler(),embedding=embedding)
+
+        forward_answer = TabuSampler().sample(self.bqm,num_reads=1)
         forward_solutions, forward_energies = forward_answer.record.sample, forward_answer.record.energy
         i5 = int(5.0/95*len(forward_answer))  # Index i5 is about a 5% indexial move from the sample of lowest energy
         initial = dict(zip(forward_answer.variables, forward_answer.record[i5].sample))
         reverse_anneal_params = dict(anneal_schedule=reverse_schedule,initial_state=initial, reinitialize_state=False,label='JSSP_bqm_iter_reverse')
+        samplerSET_forward=forward_answer
+        samplerSET=sampler_emb.sample(bqm=self.bqm,num_reads=1000,anneal_schedule=reverse_schedule,initial_state=initial, reinitialize_state=False,label='JSSP_bqm_iter_reverse')
         
+        """
+        iteration =( hybrid.IdentityDecomposer() | 
+                   hybrid.SubproblemCliqueEmbedder(sampler=DWaveSampler())
+                    | hybrid.QPUSubproblemExternalEmbeddingSampler(qpu_sampler=DWaveSampler()) |
+                     hybrid.SplatComposer() )
         
-        
-        iteration = (
-            hybrid.EnergyImpactDecomposer(size=max_subproblem_size)
-            | self.SubproblemCliqueEmbedder(sampler=sampler)
-            | hybrid.QPUSubproblemExternalEmbeddingSampler(qpu_sampler=sampler,sampling_params=reverse_anneal_params)| hybrid.SplatComposer())
-        
-        workflow = hybrid.Loop(iteration, max_iter=5,convergence=convergence)
-        init_state = hybrid.State.from_problem(self.bqm)
+        workflow = hybrid.LoopUntilNoImprovement(iteration, max_iter=1)
+        init_state = hybrid.State.from_sample(hybrid.random_sample(self.bqm),self.bqm)
         final_state = workflow.run(init_state).result()
+        """
+        #iteration = (
+            #hybrid.IdentityDecomposer()
+            #| self.SubproblemCliqueEmbedder(sampler=sampler)
+            #| hybrid.QPUSubproblemExternalEmbeddingSampler(qpu_sampler=sampler,sampling_params=reverse_anneal_params)
+            #| hybrid.SplatComposer())
+        
+        self.solution_forward={}
+        for key in samplerSET_forward.first.sample:            
+            if samplerSET_forward.first.sample[key] !=0:
+               self.solution_forward[key]=samplerSET_forward.first.sample[key]
+        self.energy_forward = samplerSET_forward.first.energy
         self.solution={}
-        for key in final_state.samples.first.sample:            
-            if final_state.samples.first.sample[key] !=0:
-               self.solution[key]=final_state.samples.first.sample[key]
+        for key in samplerSET.first.sample:            
+            if samplerSET.first.sample[key] !=0:
+               self.solution[key]=samplerSET.first.sample[key]
+        self.energy = samplerSET.first.energy
         
         #qpu_access_times=0
         #qpu_access_times+=qpu_access_time1+qpu_access_time2
        
-        return self.solution#,qpu_access_times
+        return self.solution,self.solution_forward,self.energy_forward,self.energy#,qpu_access_times
     
     def klassische_solve(self,max_iter,convergence):
         iteration = hybrid.RacingBranches(hybrid.Const(subsamples=None)
@@ -930,7 +953,7 @@ class eindim_Problem():
         plt.yticks(ticks,labels)
         '''
         ax.axis([0,self.stange_lange,0,self.num_stange])
-        plt.savefig('1dsa.svg',format='svg',bbox_inches = 'tight')
+        plt.savefig('1dsa.png',format='png',bbox_inches = 'tight')
         plt.show()
         
     def prufung(self):
@@ -954,7 +977,8 @@ class eindim_Problem():
         print("Starttime:",starttime)
         print("endtime:",endtime)
         print (endtime-starttime)
-        
+ 
+ 
 
         
 if __name__=="__main__":
@@ -976,6 +1000,8 @@ if __name__=="__main__":
     
     #a.prufung() 
     #a.runtime()
+    #solution=a.define_csp()
+    #print(solution)
     
     
     
@@ -997,12 +1023,30 @@ if __name__=="__main__":
     
     
     starttime=datetime.datetime.now()
-    solution= a.pureRA(max_iter=1,convergence=1,num_reads=100)
-    endtime=datetime.datetime.now()
-    print ("starttime:",starttime)
-    print ("endtime:",endtime)
-    print ("runtime:",(endtime-starttime))
-    print(solution)
+    ecxel_hold_time={}
+    for hold_time in [1]:
+        excel_s_target={}
+        excel_s_target['hold_time']=hold_time
+        excel_s_target['s_target']=[]
+        excel_s_target['energy_forward']=[]
+        excel_s_target['energy']=[]
+        for s_target in [0.45]:
+            solution,solution_forward,energy_forward,energy= a.pureRA(s_target,hold_time)
+            endtime=datetime.datetime.now()
+            print ("starttime:",starttime)
+            print ("endtime:",endtime)
+            print ("runtime:",(endtime-starttime))
+            print('solution:',solution)
+            print('solution_forward:',solution_forward)
+            print('energy_forward',energy_forward)
+            excel_s_target['energy_forward'].append(energy_forward)
+            print('energy',energy)
+            excel_s_target['energy'].append(energy)
+            print(s_target)
+            excel_s_target['s_target'].append(s_target)
+        print(excel_s_target)
+        ecxel_hold_time[hold_time] = excel_s_target
+    print(ecxel_hold_time)
     
     
     '''
